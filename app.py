@@ -1,7 +1,9 @@
 # ════════════════════════════════════════════════════════════
-#  大戶思維投資導航系統 — Streamlit Cloud 版
+#  大戶思維投資導航系統 — Streamlit Cloud 版 v1.1（SSL 修正）
 # ════════════════════════════════════════════════════════════
 
+import ssl
+import urllib.request
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -25,10 +27,6 @@ st.markdown("""
         background: #3a1010; border-left: 4px solid #ff4444;
         padding: 10px 14px; border-radius: 4px; margin: 6px 0;
     }
-    .alert-green {
-        background: #0d2015; border-left: 4px solid #56d364;
-        padding: 10px 14px; border-radius: 4px; margin: 6px 0;
-    }
     .alert-yellow {
         background: #2a1f00; border-left: 4px solid #f0a500;
         padding: 10px 14px; border-radius: 4px; margin: 6px 0;
@@ -38,16 +36,21 @@ st.markdown("""
 
 
 # ════════════════════════════════════════════════════════════
-#  雲端版：Token 從 Streamlit Secrets 讀取
-#  （本機測試時從 .streamlit/secrets.toml 讀取）
+#  SSL 繞過（修正 MOPS 憑證問題）
+# ════════════════════════════════════════════════════════════
+
+def make_ssl_context():
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+# ════════════════════════════════════════════════════════════
+#  Token 讀取
 # ════════════════════════════════════════════════════════════
 
 def get_finmind_token() -> str:
-    """
-    優先順序：
-    1. Streamlit Cloud Secrets（部署後自動使用）
-    2. 使用者在側邊欄手動輸入（本機或備用）
-    """
     try:
         return st.secrets["FINMIND_TOKEN"]
     except Exception:
@@ -66,12 +69,9 @@ def fetch_revenue_mops(year: int, month: int) -> pd.DataFrame:
         f"t21sc03_{roc_year}_{month}_0.html"
     )
     try:
-        import ssl, urllib.request
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-response = urllib.request.urlopen(url, context=ctx)
-tables = pd.read_html(response, encoding="big5", header=[0, 1])
+        ctx      = make_ssl_context()
+        response = urllib.request.urlopen(url, context=ctx)
+        tables   = pd.read_html(response, encoding="big5", header=[0, 1])
         for t in tables:
             t.columns = [
                 "_".join(str(c) for c in col).strip() for col in t.columns
@@ -102,7 +102,7 @@ tables = pd.read_html(response, encoding="big5", header=[0, 1])
 
 
 @st.cache_data(ttl=3600)
-def build_history(months: int = 6) -> pd.DataFrame:
+def build_history(months: int = 5) -> pd.DataFrame:
     frames = []
     today  = datetime.today()
     bar    = st.progress(0, text="正在從 MOPS 抓取月營收...")
@@ -112,16 +112,16 @@ def build_history(months: int = 6) -> pd.DataFrame:
         if not df.empty:
             frames.append(df)
         bar.progress((i + 1) / months, text=f"已載入 {dt.year}-{dt.month:02d}")
-        time.sleep(0.5)   # 雲端版稍微放慢，對 MOPS 友善
+        time.sleep(0.5)
     bar.empty()
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600)
-def fetch_gross_margin(stock_id: str, token: str) -> float | None:
+def fetch_gross_margin(stock_id: str, token: str):
     if not token:
         return None
-    url = "https://api.finmindtrade.com/api/v4/data"
+    url    = "https://api.finmindtrade.com/api/v4/data"
     params = {
         "dataset":    "TaiwanStockFinancialStatements",
         "data_id":    stock_id,
@@ -217,14 +217,11 @@ with st.sidebar:
     min_slope = st.number_input("最低加速斜率", value=0.0, step=0.5)
 
     st.markdown("#### 🔍 做帳偵測")
-
-    # 嘗試從 Secrets 讀取 token
     cloud_token = get_finmind_token()
     if cloud_token:
-        st.success("✅ FinMind Token 已從雲端設定載入")
+        st.success("✅ FinMind Token 已載入")
         token_to_use = cloud_token
     else:
-        # 沒有 Secrets 時，讓使用者手動輸入
         manual_token = st.text_input(
             "FinMind Token（選填）",
             type="password",
@@ -246,17 +243,21 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════
 
 st.title("🐋 大戶思維投資導航系統")
-st.caption("Module 1 — 成長動能篩選器 ｜ Streamlit Cloud 版")
+st.caption("Module 1 — 成長動能篩選器 ｜ Streamlit Cloud 版 v1.1")
 
 tab_result, tab_guide, tab_roadmap = st.tabs(
     ["📊 篩選結果", "📖 使用說明", "🗺 開發路線圖"]
 )
 
-# ── 使用說明 ──────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
-    ### 三大篩選邏輯
+    ### 如何使用
+    1. 左側調整參數（回溯月數、成長門檻）
+    2. 按「🚀 開始分析」
+    3. 等待約 1～2 分鐘（雲端抓資料）
+    4. 查看篩選結果，可下載 CSV
 
+    ### 三大篩選邏輯
     | 條件 | 意義 |
     |------|------|
     | **連 3 月 YoY > 0** | 持續正成長，供不應求訊號 |
@@ -266,31 +267,23 @@ with tab_guide:
     ### FinMind Token 申請（免費）
     1. 前往 [finmindtrade.com](https://finmindtrade.com) 註冊
     2. 登入 → 個人資料 → 複製 API Token
-    3. 貼到左側欄位，或請管理員設定到 Streamlit Secrets
-
-    ### 操作流程
-    1. 左側設定參數
-    2. 按「開始分析」
-    3. 等待約 1～2 分鐘（雲端抓資料）
-    4. 查看結果，可下載 CSV
+    3. 貼到左側欄位即可啟用做帳偵測
     """)
 
-# ── 開發路線圖 ────────────────────────────────────────────────
 with tab_roadmap:
     st.markdown("""
-    ### 已完成
-    - ✅ Module 1：成長動能篩選器（YoY 斜率加速）
-    - ✅ Module 1：做帳偵測（毛利率異常警示）
-    - ✅ Streamlit Cloud 雲端部署
+    ### ✅ 已完成
+    - Module 1：成長動能篩選器
+    - Module 1：做帳偵測（毛利率異常警示）
+    - Streamlit Cloud 雲端部署
 
-    ### 開發中
-    - 🔄 Module 1：P&Q 產業訊號（TrendForce RSS）
-    - 🔄 Module 2：大戶籌碼追蹤引擎
-    - 🔄 Module 3：政策新聞 NLP 分析
-    - 🔄 Module 4：停損紀律控制台
+    ### 🔄 開發中
+    - Module 1：P&Q 產業訊號
+    - Module 2：大戶籌碼追蹤引擎
+    - Module 3：政策新聞 NLP 分析
+    - Module 4：停損紀律控制台
     """)
 
-# ── 篩選結果 ──────────────────────────────────────────────────
 with tab_result:
     if not run_btn:
         st.markdown("""
@@ -322,7 +315,9 @@ with tab_result:
 
         # Step 3：做帳偵測
         if token_to_use and not candidates.empty:
-            candidates = run_fake_detector(candidates, token_to_use, margin_threshold)
+            candidates = run_fake_detector(
+                candidates, token_to_use, margin_threshold
+            )
 
         # 統計卡片
         st.divider()
@@ -334,10 +329,10 @@ with tab_result:
             ])
             if "毛利率狀態" in candidates.columns else 0
         )
-        c1.metric("掃描股票數",   f"{total_stocks:,}")
-        c2.metric("通過成長篩選", f"{passed}")
+        c1.metric("掃描股票數",    f"{total_stocks:,}")
+        c2.metric("通過成長篩選",  f"{passed}")
         c3.metric("⚠️ 毛利率異常", f"{flagged}" if token_to_use else "未偵測")
-        c4.metric("✅ 最終候選",   f"{passed - flagged}")
+        c4.metric("✅ 最終候選",    f"{passed - flagged}")
         st.divider()
 
         # 結果表格
@@ -351,8 +346,8 @@ with tab_result:
             st.subheader(f"📋 候選名單（{len(candidates)} 支）")
 
             display_cols = [
-                "股票代號", "公司名稱", "最新YoY(%)", "加速斜率",
-                "連3月正成長", "成長加速中",
+                "股票代號", "公司名稱", "最新YoY(%)",
+                "加速斜率", "連3月正成長", "成長加速中",
             ]
             if "毛利率狀態" in candidates.columns:
                 display_cols.append("毛利率狀態")
@@ -369,7 +364,11 @@ with tab_result:
                 .style
                 .applymap(
                     highlight,
-                    subset=["毛利率狀態"] if "毛利率狀態" in display_cols else [],
+                    subset=(
+                        ["毛利率狀態"]
+                        if "毛利率狀態" in display_cols
+                        else []
+                    ),
                 )
                 .format({"最新YoY(%)": "{:.1f}%", "加速斜率": "{:.2f}"})
                 .background_gradient(subset=["加速斜率"], cmap="YlGn")
@@ -386,7 +385,7 @@ with tab_result:
                 mime="text/csv",
             )
 
-            # 做帳警示清單
+            # 做帳警示
             if "毛利率狀態" in candidates.columns:
                 risky = candidates[
                     candidates["毛利率狀態"].str.contains("⚠️", na=False)
@@ -397,6 +396,6 @@ with tab_result:
                         st.markdown(f"""
                         <div class="alert-red">
                             <strong>{row['股票代號']} {row['公司名稱']}</strong>
-                            — {row['毛利率狀態']}，營收暴增但獲利品質存疑，建議查核財報。
+                            — {row['毛利率狀態']}，營收暴增但獲利品質存疑。
                         </div>
                         """, unsafe_allow_html=True)
