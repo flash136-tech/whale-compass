@@ -66,7 +66,12 @@ def fetch_revenue_mops(year: int, month: int) -> pd.DataFrame:
         f"t21sc03_{roc_year}_{month}_0.html"
     )
     try:
-        tables = pd.read_html(url, encoding="big5", header=[0, 1])
+        import ssl, urllib.request
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+response = urllib.request.urlopen(url, context=ctx)
+tables = pd.read_html(response, encoding="big5", header=[0, 1])
         for t in tables:
             t.columns = [
                 "_".join(str(c) for c in col).strip() for col in t.columns
