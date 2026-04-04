@@ -497,7 +497,7 @@ with tab_result:
             styled = (
                 candidates[display_cols]
                 .style
-                .applymap(
+                .map(
                     highlight,
                     subset=(
                         ["毛利率狀態"]
